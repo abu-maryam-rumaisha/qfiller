@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"qfiller/generator"
+	"github.com/abu-maryam-rumaisha/qfiller/generator"
 )
 
 // schema is a variable so the compiler cannot fold either call into a constant.

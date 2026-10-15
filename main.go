@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"qfiller/generator"
+	"github.com/abu-maryam-rumaisha/qfiller/generator"
 )
 
 func main() {

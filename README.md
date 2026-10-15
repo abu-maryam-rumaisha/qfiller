@@ -146,6 +146,15 @@ Rules:
 
 ## Usage
 
+### Install
+
+```sh
+go install github.com/abu-maryam-rumaisha/qfiller@latest
+```
+
+This puts the `qfiller` binary in `$(go env GOPATH)/bin`. Inside this
+repository, `go run .` works the same way without installing.
+
 ### CLI
 
 ```sh
@@ -166,7 +175,7 @@ It can also be called from a `//go:generate` comment.
 ### Library
 
 ```go
-import "qfiller/generator"
+import "github.com/abu-maryam-rumaisha/qfiller/generator"
 
 parts, err := generator.Parse("Hello {name}!")          // []generator.Part
 pkg, specs, err := generator.Scan("./store")           // templates from //qfiller: comments

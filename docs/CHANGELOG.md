@@ -7,6 +7,18 @@ Format: newest entries at the top. Group each entry under **Added**,
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-10-15
+
+### 2026-10-15: Module path matches the repository
+
+#### Fixed
+- The module path in `go.mod` is now `github.com/abu-maryam-rumaisha/qfiller` instead of `qfiller`, so `go install github.com/abu-maryam-rumaisha/qfiller@latest` works and the `generator` package can be imported from other modules.
+  - Imports of the `generator` package in `main.go`, `bench/bench_test.go` and the README now use `github.com/abu-maryam-rumaisha/qfiller/generator`.
+- README: added an Install section.
+- Changelog: the entries released in v0.1.0 are now grouped under a `[v0.1.0]` heading instead of `[Unreleased]`.
+
+## [v0.1.0] - 2026-10-15
+
 ### 2026-10-15: README moved to the project root
 
 #### Changed
