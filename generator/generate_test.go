@@ -17,6 +17,8 @@ func TestGenerateOutput(t *testing.T) {
 
 package greet
 
+import "strings"
+
 const (
 	greetLit0 = "Hello "
 	greetLit1 = ", welcome to "
@@ -24,7 +26,14 @@ const (
 )
 
 func Greet(name, place string) string {
-	return greetLit0 + name + greetLit1 + place + greetLit2
+	var b strings.Builder
+	b.Grow(20 + len(name) + len(place))
+	b.WriteString(greetLit0)
+	b.WriteString(name)
+	b.WriteString(greetLit1)
+	b.WriteString(place)
+	b.WriteString(greetLit2)
+	return b.String()
 }
 `
 	if string(src) != want {
@@ -64,6 +73,11 @@ func TestGenerateCompiles(t *testing.T) {
 		Spec{FuncName: "Braces", Template: `{{"{k}": "{v}"}}`},
 		// Parameter named like the constant the generator would pick.
 		Spec{FuncName: "Clash", Template: "a{clashLit0}b"},
+		// Parameters named like the builder variable, the strings package
+		// and the builtin len.
+		Spec{FuncName: "Names", Template: "{b}/{strings}/{len}/{len_}"},
+		// A top-level name that takes "strings", so the import needs an alias.
+		Spec{FuncName: "strings", Template: "pkg"},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +95,8 @@ func main() {
 	fmt.Println(Repeat("1", "2"))
 	fmt.Println(Braces("key", "val"))
 	fmt.Println(Clash("X"))
+	fmt.Println(Names("1", "2", "3", "4"))
+	fmt.Println(strings())
 }
 `
 	want := strings.Join([]string{
@@ -91,6 +107,8 @@ func main() {
 		"1-1-2",
 		`{"key": "val"}`,
 		"aXb",
+		"1/2/3/4",
+		"pkg",
 	}, "\n") + "\n"
 
 	dir := t.TempDir()

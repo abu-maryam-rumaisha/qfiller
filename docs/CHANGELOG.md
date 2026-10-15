@@ -7,6 +7,44 @@ Format: newest entries at the top. Group each entry under **Added**,
 
 ## [Unreleased]
 
+### 2026-10-15: README moved to the project root
+
+#### Changed
+- `docs/README.md` moved to `README.md` at the project root, so it shows on the repository front page. Its link to the changelog now points to `docs/CHANGELOG.md`.
+
+### 2026-10-15: Generated functions join with strings.Builder
+
+#### Changed
+- Generated functions build the result with a `strings.Builder` sized up front with `Grow`, instead of joining with `+`.
+  - The Grow size is the literal byte count (an integer worked out at generation time) plus `len` of each parameter, multiplied by its number of uses, e.g. `b.Grow(62 + 2*len(schema))`.
+  - Measured on `QUsers` (i7-10750H, Go 1.26.5): ~51 ns/op, down from ~63 ns/op with `+`. Both use 80 B and 1 alloc per op. A `Builder` without `Grow` was ~138 ns/op with 4 allocs, so `Grow` is required.
+  - Templates with zero or one part don't use a builder: an empty template returns `""`, a template with no placeholders returns its constant (no allocation), and `{v}` returns `v`.
+  - The output file imports `strings` only when some function uses a builder.
+- Name clashes introduced by the builder code are handled:
+  - The builder variable `b` gets `_` appended if a parameter or top-level name already uses it.
+  - The `strings` import gets an alias (`strings_`, ...) if a parameter or top-level name is `strings`.
+  - A `{len}` placeholder becomes the parameter `len_` (or longer, if taken) so the builtin `len` stays usable. Arguments are passed by position, so callers are not affected.
+- Tests: golden output updated; the end-to-end test now covers `{b}`, `{strings}`, `{len}`, `{len_}` and a function named `strings`.
+- README: generation rules describe the builder, and "A `strings.Builder` output mode" is removed from the next steps.
+
+### 2026-10-15: `-src` flag wired into the CLI
+
+#### Fixed
+- `main.go` now has the `-src` flag described in the "Templates from source comments" entry. Before this, the entry listed it but the CLI didn't have it.
+  - With `-src`, `-template` and `-func` are ignored. `-pkg` defaults to the scanned package and can still be set to override it.
+  - Errors if no `//qfiller:` directives are found, instead of writing an empty file.
+  - `-template` is now required only when `-src` is not set.
+
+### 2026-10-15: Benchmark against strings.ReplaceAll
+
+#### Added
+- `bench` package: compares the generated `QUsers` (from the `{schema}` users/store join template) with `strings.ReplaceAll` on the same template.
+  - The template is a `//qfiller:QUsers` directive in `bench.go`. `query_gen.go` is produced from it by `go generate ./bench`, which runs `qfiller -src .`.
+  - The tests read the same directive back with `generator.Scan`, so `ReplaceAll` always runs on the exact template `QUsers` was generated from.
+  - `TestSameResult` checks that both return the same string.
+  - `BenchmarkReplaceAll` and `BenchmarkGenerated` run with `go test -bench . ./bench`.
+  - First run (i7-10750H, Go 1.26.5): generated ~63 ns/op, ReplaceAll ~128 ns/op. Both use 80 B and 1 alloc per op.
+
 ### 2026-10-15: Templates from source comments
 
 #### Added
@@ -42,4 +80,4 @@ Format: newest entries at the top. Group each entry under **Added**,
 ### 2026-10-15: Docs
 
 #### Added
-- `docs/` directory with the project overview ([README.md](README.md)) and this changelog.
+- `docs/` directory with the project overview ([README.md](../README.md), now at the project root) and this changelog.

@@ -39,13 +39,40 @@ func Generate(pkg string, specs ...Spec) ([]byte, error) {
 		used[s.FuncName] = true
 	}
 
-	file := &ast.File{Name: ast.NewIdent(pkg)}
-	for _, s := range specs {
+	parsed := make([][]Part, len(specs))
+	needStrings := false
+	params := map[string]bool{} // placeholder names across all specs
+	for i, s := range specs {
 		parts, err := Parse(s.Template)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s.FuncName, err)
 		}
-		consts, fn := buildFunc(s.FuncName, parts, used)
+		parsed[i] = parts
+		needStrings = needStrings || usesBuilder(parts)
+		for _, p := range parts {
+			if p.Kind == Variadic {
+				params[p.Value] = true
+			}
+		}
+	}
+
+	file := &ast.File{Name: ast.NewIdent(pkg)}
+
+	// The strings package must not be hidden by a top-level name or by a
+	// parameter, so it gets an alias when "strings" is taken.
+	var stringsPkg string
+	if needStrings {
+		stringsPkg = uniqueName("strings", func(name string) bool { return used[name] || params[name] })
+		used[stringsPkg] = true
+		spec := &ast.ImportSpec{Path: &ast.BasicLit{Kind: token.STRING, Value: strconv.Quote("strings")}}
+		if stringsPkg != "strings" {
+			spec.Name = ast.NewIdent(stringsPkg)
+		}
+		file.Decls = append(file.Decls, &ast.GenDecl{Tok: token.IMPORT, Specs: []ast.Spec{spec}})
+	}
+
+	for i, s := range specs {
+		consts, fn := buildFunc(s.FuncName, parsed[i], used, stringsPkg)
 		if consts != nil {
 			file.Decls = append(file.Decls, consts)
 		}
@@ -60,18 +87,47 @@ func Generate(pkg string, specs ...Spec) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// usesBuilder reports whether the function for parts joins several parts
+// with a strings.Builder. An empty template, a single literal or a single
+// placeholder is returned directly.
+func usesBuilder(parts []Part) bool { return len(parts) > 1 }
+
 // buildFunc returns the const block for the literal parts (nil if there are
 // none) and the function declaration that joins all parts in order.
 // used holds top-level names already taken and is updated with new ones.
-func buildFunc(funcName string, parts []Part, used map[string]bool) (*ast.GenDecl, *ast.FuncDecl) {
+// stringsPkg is the name the strings package is imported under.
+func buildFunc(funcName string, parts []Part, used map[string]bool, stringsPkg string) (*ast.GenDecl, *ast.FuncDecl) {
+	builder := usesBuilder(parts)
+
 	// Parameters: one per distinct placeholder, in order of first use.
-	var params []*ast.Ident
-	seen := map[string]bool{}
+	// count is how often each placeholder is used, for the Grow size.
+	var order []string
+	count := map[string]int{}
 	for _, p := range parts {
-		if p.Kind == Variadic && !seen[p.Value] {
-			seen[p.Value] = true
-			params = append(params, ast.NewIdent(p.Value))
+		if p.Kind == Variadic {
+			if count[p.Value] == 0 {
+				order = append(order, p.Value)
+			}
+			count[p.Value]++
 		}
+	}
+
+	// The Grow size needs the builtin len, so a placeholder named len gets
+	// a different parameter name. Callers pass arguments by position, so
+	// this does not change how the function is called.
+	paramName := map[string]string{}
+	seen := map[string]bool{}
+	for _, v := range order {
+		name := v
+		if builder && v == "len" {
+			name = uniqueName("len_", func(n string) bool { return count[n] > 0 })
+		}
+		paramName[v] = name
+		seen[name] = true
+	}
+	var params []*ast.Ident
+	for _, v := range order {
+		params = append(params, ast.NewIdent(paramName[v]))
 	}
 
 	// A constant must not be shadowed by a parameter in the function body.
@@ -79,6 +135,7 @@ func buildFunc(funcName string, parts []Part, used map[string]bool) (*ast.GenDec
 
 	var specs []ast.Spec
 	var operands []ast.Expr
+	litLen := 0
 	prefix := lowerFirst(funcName) + "Lit"
 	for _, p := range parts {
 		switch p.Kind {
@@ -90,17 +147,53 @@ func buildFunc(funcName string, parts []Part, used map[string]bool) (*ast.GenDec
 				Values: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: strconv.Quote(p.Value)}},
 			})
 			operands = append(operands, ast.NewIdent(name))
+			litLen += len(p.Value)
 		case Variadic:
-			operands = append(operands, ast.NewIdent(p.Value))
+			operands = append(operands, ast.NewIdent(paramName[p.Value]))
 		}
 	}
 
-	var result ast.Expr = &ast.BasicLit{Kind: token.STRING, Value: `""`}
-	if len(operands) > 0 {
-		result = operands[0]
-		for _, op := range operands[1:] {
-			result = &ast.BinaryExpr{X: result, Op: token.ADD, Y: op}
+	var body []ast.Stmt
+	switch {
+	case len(operands) == 0:
+		body = []ast.Stmt{&ast.ReturnStmt{Results: []ast.Expr{&ast.BasicLit{Kind: token.STRING, Value: `""`}}}}
+	case !builder:
+		body = []ast.Stmt{&ast.ReturnStmt{Results: operands}}
+	default:
+		b := uniqueName("b", taken)
+
+		// Grow size: the literal bytes, known now, plus len of each
+		// parameter times the number of times it is used.
+		var size []ast.Expr
+		if litLen > 0 {
+			size = append(size, &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(litLen)})
 		}
+		for _, v := range order {
+			var term ast.Expr = &ast.CallExpr{Fun: ast.NewIdent("len"), Args: []ast.Expr{ast.NewIdent(paramName[v])}}
+			if n := count[v]; n > 1 {
+				term = &ast.BinaryExpr{X: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n)}, Op: token.MUL, Y: term}
+			}
+			size = append(size, term)
+		}
+		sizeExpr := size[0]
+		for _, t := range size[1:] {
+			sizeExpr = &ast.BinaryExpr{X: sizeExpr, Op: token.ADD, Y: t}
+		}
+
+		call := func(method string, args ...ast.Expr) *ast.CallExpr {
+			return &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent(b), Sel: ast.NewIdent(method)}, Args: args}
+		}
+		body = append(body,
+			&ast.DeclStmt{Decl: &ast.GenDecl{Tok: token.VAR, Specs: []ast.Spec{&ast.ValueSpec{
+				Names: []*ast.Ident{ast.NewIdent(b)},
+				Type:  &ast.SelectorExpr{X: ast.NewIdent(stringsPkg), Sel: ast.NewIdent("Builder")},
+			}}}},
+			&ast.ExprStmt{X: call("Grow", sizeExpr)},
+		)
+		for _, op := range operands {
+			body = append(body, &ast.ExprStmt{X: call("WriteString", op)})
+		}
+		body = append(body, &ast.ReturnStmt{Results: []ast.Expr{call("String")}})
 	}
 
 	var paramList []*ast.Field
@@ -114,9 +207,7 @@ func buildFunc(funcName string, parts []Part, used map[string]bool) (*ast.GenDec
 			Params:  &ast.FieldList{List: paramList},
 			Results: &ast.FieldList{List: []*ast.Field{{Type: ast.NewIdent("string")}}},
 		},
-		Body: &ast.BlockStmt{List: []ast.Stmt{
-			&ast.ReturnStmt{Results: []ast.Expr{result}},
-		}},
+		Body: &ast.BlockStmt{List: body},
 	}
 
 	if len(specs) == 0 {
